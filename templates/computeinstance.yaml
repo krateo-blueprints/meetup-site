@@ -2,13 +2,17 @@ apiVersion: compute.cnrm.cloud.google.com/v1beta1
 kind: ComputeInstance
 metadata:
   name: {{ printf "%s-computeinstance" $.Release.Name | trunc 63 | trimSuffix "-" }}
+  annotations:
+    # ComputeInstance has no spec.projectRef; without this, Config Connector falls
+    # back to the NAMESPACE NAME and targets a project called demo-system.
+    cnrm.cloud.google.com/project-id: {{ .Values.gcpProject }}
 spec:
   machineType: {{ .Values.machineType }}
   zone: us-central1-a
   bootDisk:
     initializeParams:
       sourceImageRef:
-        external: debian-cloud/debian-11
+        external: {{ .Values.bootImage }}
   networkInterface:
     - networkRef:
         external: default

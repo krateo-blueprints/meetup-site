@@ -1,4 +1,4 @@
-image: "ghcr.io/krateo-platformops/meetup-site-app:1.0.0"
+image: "ghcr.io/krateo-blueprints/meetup-site-app:1.0.0"
 replicas: 1
 resources:
   cpuRequest: "100m"
@@ -8,3 +8,6 @@ resources:
 probePath: "/"
 surveyTitle: "Meetup feedback"
 machineType: "e2-small"
+# debian-11 was retired by GCP; a ComputeInstance naming a dead family never reconciles.
+bootImage: "debian-cloud/debian-12"
+gcpProject: "operations-dev-krateo-io"
