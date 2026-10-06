@@ -1,31 +1,49 @@
 # Publishes the web app in app/ to ghcr.io/<owner>/meetup-site-app.
 #
-# A Krateo builder seeds release.yaml for the CHART; this is its sibling for the IMAGE the chart
-# references, so the blueprint and the app it deploys are released by the same repository and neither
-# can rot alone.
+# A Krateo builder seeds release.yaml for the CHART; this is its sibling for the IMAGE that chart
+# references, so the blueprint and the app it deploys are released by one repository and neither can
+# rot alone.
 #
-# Like release.yaml, this is a thin wrapper: the build lives in the org's component-image-build.yaml,
-# so a fix made there reaches every repository without touching any of them. That workflow asserts the
-# tag is on main — a tag cut from a side branch would publish an image built from code that was never
-# merged, under a version implying it was, and the result is indistinguishable afterwards.
+# The version comes from Chart.yaml, not from a git ref. It cannot come from the ref: the chart's own
+# release job creates its tag with GITHUB_TOKEN, and a tag pushed with GITHUB_TOKEN does not trigger
+# workflows — so a tag-driven image build would never fire. A separate app-X.Y.Z tag would then become
+# the image tag verbatim, and the chart would name one version while the registry held another.
 #
-# A tag `app-X.Y.Z` publishes that version. A pull request touching app/ builds without pushing, so the
-# check says whether the merge can.
+# Like release.yaml, this is a thin wrapper over the org's component-image-build.yaml, which asserts a
+# release tag is contained in main and builds a real multi-platform manifest.
 name: build-app
 
 on:
   push:
-    tags: ["app-[0-9]+.[0-9]+.[0-9]+"]
+    branches: ["main"]
+    paths: ["app/**", "Chart.yaml", ".github/workflows/build-app.yaml"]
   pull_request:
-    paths: ["app/**", ".github/workflows/build-app.yaml"]
-  workflow_dispatch:
+    paths: ["app/**", "Chart.yaml", ".github/workflows/build-app.yaml"]
+  workflow_dispatch: {}
 
 jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - uses: actions/checkout@v5
+      - id: v
+        run: |
+          set -euo pipefail
+          v="$(sed -n 's/^version:[[:space:]]*//p' Chart.yaml | head -1 | tr -d "\"' ")"
+          # An empty version would silently restore the ref-derived tags this exists to replace.
+          [ -n "$v" ] || { echo "::error::Chart.yaml declares no version; the image has nothing to be tagged with"; exit 1; }
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "::notice::publishing meetup-site-app:$v, from Chart.yaml"
+
   image:
+    needs: version
     uses: krateo-platformops/.github/.github/workflows/component-image-build.yaml@main
     permissions:
       contents: read
       packages: write
     with:
       modules: '[{"mod":"meetup-site-app","context":"app"}]'
-      push: ${{ startsWith(github.ref, 'refs/tags/') }}
+      version: ${{ needs.version.outputs.version }}
+      push: ${{ github.event_name != 'pull_request' }}
