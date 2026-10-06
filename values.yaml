@@ -1,0 +1,10 @@
+image: "ghcr.io/krateo-platformops/meetup-site-app:1.0.0"
+replicas: 1
+resources:
+  cpuRequest: "100m"
+  cpuLimit: "500m"
+  memoryRequest: "128Mi"
+  memoryLimit: "256Mi"
+probePath: "/"
+surveyTitle: "Meetup feedback"
+machineType: "e2-small"
