@@ -1,7 +1,7 @@
 # REGISTERS this blueprint: core-provider pulls the chart, generates the CRD from values.schema.json
-# and serves the Kind MeetupSite as composition.krateo.io/v0-3-0.
-# Register it from the portal once release 0.3.0 is green (builder deliverables -> Register).
-# The same file is attached to https://github.com/krateo-blueprints/meetup-site/releases/tag/0.3.0.
+# and serves the Kind MeetupSite as composition.krateo.io/v0-4-0.
+# Register it from the portal once release 0.4.0 is green (builder deliverables -> Register).
+# The same file is attached to https://github.com/krateo-blueprints/meetup-site/releases/tag/0.4.0.
 # The version is Chart.yaml's, literally; the release workflow refuses a tag that differs.
 apiVersion: core.krateo.io/v1alpha1
 kind: CompositionDefinition
@@ -11,4 +11,4 @@ metadata:
 spec:
   chart:
     url: oci://ghcr.io/krateo-blueprints/charts/meetup-site
-    version: 0.3.0
+    version: 0.4.0

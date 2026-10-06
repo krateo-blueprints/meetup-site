@@ -5,7 +5,7 @@
     "image": {
       "type": "string",
       "title": "image",
-      "default": "ghcr.io/krateo-platformops/meetup-site-app:1.0.0",
+      "default": "ghcr.io/krateo-blueprints/meetup-site-app:0.4.0",
       "description": "The container image the meetup site runs."
     },
     "replicas": {
