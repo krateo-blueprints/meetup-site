@@ -1,0 +1,375 @@
+# Releases the ONE chart at this repository's root to oci://ghcr.io/<owner>/charts/<name>.
+#
+# A Krateo builder (the Blueprint Composer or the Portal Builder) seeded this file from
+# krateo-blueprints/builder-scaffold. A seeded repository never receives scaffold updates, so this
+# file stays a thin wrapper: packaging and pushing live in the org's release-oci.yaml@main, and a fix
+# made there reaches every seeded repository without touching any of them.
+#
+# What releases, and when:
+#   • A push to main whose Chart.yaml carries a literal version (MAJOR.MINOR.PATCH, optionally with a
+#     lower-case -pre-release) that has no tag yet. That is the merge of a blueprint's pull request. The
+#     version is tagged and released once; a later merge that leaves it unchanged releases nothing, so
+#     a second release needs a version bump.
+#   • A manual run (workflow_dispatch) on main, by the same rules as a push to main. A manual run on
+#     any other branch or tag is refused.
+#   • A pushed tag (MAJOR.MINOR.PATCH, optionally with a lower-case -pre-release), for a Chart.yaml that
+#     carries the CHART_VERSION placeholder (a page set) or that same literal version.
+# A pull request runs the same checks and releases nothing, so its check says whether the merge can.
+#
+# A released blueprint is then added to the Marketplace's blueprints index
+# (krateo-blueprints/charts publish-chart.yaml), where the portal finds it without a catalog release.
+# That needs a token that may write to krateo-blueprints/charts: the org secret CHARTS_PUBLISH_TOKEN,
+# or else RELEASE_FEED_TOKEN. Without one, or for a chart the index would refuse, the jobs say why
+# in a warning and the release stands as it is.
+#
+# Every version the Blueprint Composer lets a person Start at releases here: 0.1.0, 0.1.0-rc.1. Upper
+# case and build metadata (0.1.0-RC1, 0.1.0+build) are refused, as the composer refuses them:
+# core-provider serves a chart at version V as the API version v<V with dots as dashes>, and
+# Kubernetes refuses both in an API version.
+name: release
+
+on:
+  push:
+    branches: [main]
+    # A filter cannot say "lower case, no build metadata", so the second pattern admits more than a
+    # version; the resolve job refuses the rest.
+    tags: ["[0-9]+.[0-9]+.[0-9]+", "[0-9]+.[0-9]+.[0-9]+-*"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+# Releases run one at a time: two runs deciding at once that a version has no tag would both try to
+# release it. A pull request's checks have a group of their own and never wait for a release.
+concurrency:
+  group: release-${{ github.event_name == 'pull_request' && github.ref || 'main' }}
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    outputs:
+      release: ${{ steps.v.outputs.release }}
+      tag: ${{ steps.v.outputs.tag }}
+      version: ${{ steps.v.outputs.version }}
+      oci_repo: ${{ steps.v.outputs.oci_repo }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # Every tag comes with the full history, and "has this version been released?" is a tag lookup.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - id: v
+        run: |
+          set -euo pipefail
+          # GHCR refuses upper case, and an org name may carry it.
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          echo "oci_repo=oci://ghcr.io/${owner}/charts" >> "$GITHUB_OUTPUT"
+
+          # A push to main that carries no chart (an edit before the builder's pull request is merged)
+          # releases nothing.
+          if [ ! -f Chart.yaml ]; then
+            echo "::notice::no Chart.yaml at the root yet"
+            echo "release=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          n="$(find . -name Chart.yaml -not -path './.git/*' -not -path '*/charts/*' | wc -l)"
+          [ "$n" -eq 1 ] || { echo "::error::$n charts; a builder repo holds exactly one, at the root"; exit 1; }
+
+          name="$(sed -n 's/^name:[[:space:]]*//p' Chart.yaml | head -1 | tr -d "\"' ")"
+          declared="$(sed -n 's/^version:[[:space:]]*//p' Chart.yaml | head -1 | tr -d "\"' ")"
+          # Every version the Blueprint Composer accepts (see the header). Refusing one the composer let
+          # a person Start at would strand the blueprint: the merge releases nothing, and the portal's
+          # Register still offers a version that was never published.
+          semver='^[0-9]+\.[0-9]+\.[0-9]+(-[0-9a-z-]+(\.[0-9a-z-]+)*)?$'
+          # Checked for every event, not only on main: a pull request whose check passes a version the
+          # merge then refuses is a check that says the wrong thing.
+          if [ "$declared" != CHART_VERSION ] && ! printf '%s' "$declared" | grep -Eq "$semver"; then
+            echo "::error::version '$declared' is not MAJOR.MINOR.PATCH, optionally with a lower-case -pre-release (or the CHART_VERSION placeholder)"; exit 1
+          fi
+          released=false
+          if [ "$declared" != CHART_VERSION ] && git rev-parse -q --verify "refs/tags/$declared" >/dev/null; then released=true; fi
+
+          # A manual run releases main and nothing else. Run on any other branch or tag, it would tag and
+          # publish a commit nobody merged, and the reviewed merge would then find the version released.
+          if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ] && [ "$GITHUB_REF" != refs/heads/main ]; then
+            echo "::error::a manual run releases main only, not $GITHUB_REF"; exit 1
+          fi
+
+          release=true; tag=false; version="$declared"
+          case "${GITHUB_EVENT_NAME}:${GITHUB_REF_TYPE}" in
+            pull_request:*)
+              release=false
+              if [ "$released" = true ]; then echo "::warning::$declared is already released, so merging this releases nothing; bump Chart.yaml's version"; fi ;;
+            push:tag)
+              version="$GITHUB_REF_NAME"
+              # For a CHART_VERSION chart the tag IS the version, and the trigger's filter let through
+              # anything after the dash.
+              printf '%s' "$version" | grep -Eq "$semver" \
+                || { echo "::error::tag $version is not MAJOR.MINOR.PATCH, optionally with a lower-case -pre-release"; exit 1; }
+              # The composer shows the API version as v<chart version>; a package at any other version
+              # would serve a different API from the one the person saw.
+              [ "$declared" = CHART_VERSION ] || [ "$declared" = "$version" ] || { echo "::error::tag $version but Chart.yaml is $declared"; exit 1; } ;;
+            *)
+              if [ "$declared" = CHART_VERSION ]; then echo "::notice::placeholder version: release by pushing a semver tag"; release=false
+              elif [ "$released" = true ]; then echo "::notice::$declared already released; bump Chart.yaml"; release=false
+              else tag=true; fi ;;
+          esac
+
+          # The registration file must register what this repository publishes, or Register would
+          # install a chart that is not this one, or one that does not exist.
+          if [ -f compositiondefinition.yaml ]; then
+            cd_name="$(awk '/^metadata:/{m=1;next} m&&/^[[:space:]]+name:/{print $2;exit}' compositiondefinition.yaml | tr -d "\"' ")"
+            cd_url="$(sed -n 's/^[[:space:]]*url:[[:space:]]*//p' compositiondefinition.yaml | head -1 | tr -d "\"' ")"
+            cd_ver="$(sed -n 's/^[[:space:]]*version:[[:space:]]*//p' compositiondefinition.yaml | head -1 | tr -d "\"' ")"
+            [ "$cd_name" = "$name" ] || { echo "::error::CD registers '$cd_name', chart is '$name'"; exit 1; }
+            [ "$cd_url" = "oci://ghcr.io/${owner}/charts/${name}" ] || { echo "::error::CD url $cd_url is not what this repo publishes"; exit 1; }
+            case "$cd_ver" in CHART_VERSION|"$declared") ;; *) echo "::error::CD version $cd_ver != Chart.yaml $declared"; exit 1 ;; esac
+          fi
+          { echo "release=$release"; echo "tag=$tag"; echo "version=$version"; } >> "$GITHUB_OUTPUT"
+
+      - uses: azure/setup-helm@v5.0.0
+        with:
+          version: v3.19.0
+
+      # The chart IS the repository root, so without .helmignore the package carries .git/ and .github/
+      # too. Checked on every run, pull requests included, so a broken .helmignore is caught before a
+      # merge rather than after a release.
+      - name: the package carries the chart, not the repository
+        run: |
+          set -euo pipefail
+          [ -f Chart.yaml ] || exit 0
+          sed -i 's/CHART_VERSION/0.0.0-check/g' Chart.yaml
+          # As release-oci does: charts/ is not committed, and a chart that declares dependencies does
+          # not package until they are fetched.
+          if grep -q '^dependencies:' Chart.yaml; then
+            helm dependency build . >/dev/null 2>&1 || helm dependency update . >/dev/null 2>&1 || true
+          fi
+          helm package . -d "$RUNNER_TEMP/pkg" >/dev/null
+          if tar tzf "$RUNNER_TEMP"/pkg/*.tgz | grep -E '^[^/]+/(\.git|\.github)/'; then
+            echo "::error::.helmignore must exclude .git/ and .github/"; exit 1
+          fi
+
+  # A tag pushed with GITHUB_TOKEN starts no new run, so the package is built by THIS run's oci job.
+  # If someone else pushed the tag first, the push is refused and nothing is released twice.
+  tag:
+    needs: resolve
+    if: needs.resolve.outputs.tag == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+      - env:
+          VERSION: ${{ needs.resolve.outputs.version }}
+        run: git tag "$VERSION" "$GITHUB_SHA" && git push origin "refs/tags/$VERSION"
+
+  oci:
+    needs: [resolve, tag]
+    # `tag` is skipped for a pushed tag; only its failure stops the release.
+    if: ${{ !cancelled() && needs.resolve.outputs.release == 'true' && needs.tag.result != 'failure' }}
+    uses: krateo-platformops/.github/.github/workflows/release-oci.yaml@main
+    permissions:
+      contents: read
+      packages: write
+    with:
+      chart_version: ${{ needs.resolve.outputs.version }}
+      oci_repo: ${{ needs.resolve.outputs.oci_repo }}
+      chart_root: "."
+
+  # After the push, deliberately: the chart is the release, and an asset problem must never stop it
+  # from shipping. The release carries the registration file stamped with the version it registers,
+  # because the copy on main still says CHART_VERSION for a page set.
+  registration:
+    needs: [resolve, oci]
+    if: ${{ !cancelled() && needs.oci.result == 'success' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.resolve.outputs.version }}
+        run: |
+          set -euo pipefail
+          R="$GITHUB_REPOSITORY"
+          gh release view "$VERSION" -R "$R" >/dev/null 2>&1 \
+            || gh release create "$VERSION" -R "$R" --verify-tag --title "$VERSION" \
+                 --notes "Register $VERSION from the Krateo portal (builder deliverables -> Register), or apply the attached compositiondefinition.yaml."
+          # GHCR gives a new package its repository's visibility.
+          if [ "$(gh api "repos/$R" --jq .private)" = true ]; then
+            echo "::warning::private repo -> private GHCR package; registering needs chart.credentials"
+          fi
+          [ -f compositiondefinition.yaml ] || exit 0
+          sed -i "s/CHART_VERSION/${VERSION}/g" compositiondefinition.yaml
+          gh release upload "$VERSION" compositiondefinition.yaml -R "$R" --clobber
+
+  # The portal's Marketplace lists the krateo-blueprints blueprints index
+  # (https://krateo-blueprints.github.io/charts/blueprints/index.yaml), so a released blueprint is
+  # merged into it here and gets its card without anyone releasing the catalog. After the push, like
+  # the registration: the chart is the release, and nothing about the index may stop it shipping or
+  # turn the run red. Every reason not to publish is a ::warning:: and a skip, never a failure.
+  #
+  # The token the publisher gets is CHARTS_PUBLISH_TOKEN, the krateo-blueprints org secret meant for
+  # it, and when that is not set, RELEASE_FEED_TOKEN, the org's existing cross-repository token (it
+  # publishes release notes). Whether the second may write to krateo-blueprints/charts depends on
+  # how it was issued, and publish-chart.yaml is a called workflow: a job that calls one cannot
+  # continue-on-error, so a token the publisher is refused would turn this run red after the release
+  # shipped. The token is therefore tried here first, read-only, and the index is skipped with a
+  # warning unless it may write there.
+  index-package:
+    needs: [resolve, oci]
+    if: ${{ !cancelled() && needs.oci.result == 'success' }}
+    runs-on: ubuntu-latest
+    outputs:
+      publish: ${{ steps.p.outputs.publish }}
+    steps:
+      # Read-only: one GET of the publisher's repository with the token the index job will pass. A
+      # repository outside the krateo-blueprints org gets neither secret, and stays out of the index.
+      - id: token
+        env:
+          PUBLISH_TOKEN: ${{ secrets.CHARTS_PUBLISH_TOKEN || secrets.RELEASE_FEED_TOKEN }}
+          WHICH: ${{ secrets.CHARTS_PUBLISH_TOKEN != '' && 'CHARTS_PUBLISH_TOKEN' || 'RELEASE_FEED_TOKEN' }}
+          CHARTS_REPO: krateo-blueprints/charts
+        run: |
+          set -euo pipefail
+          echo "ok=false" >> "$GITHUB_OUTPUT"
+          if [ -z "$PUBLISH_TOKEN" ]; then
+            echo "::warning::neither CHARTS_PUBLISH_TOKEN nor RELEASE_FEED_TOKEN is set: the chart is released but not added to the Marketplace's blueprints index"; exit 0
+          fi
+          code="$(curl -sS -o "$RUNNER_TEMP/repo.json" -D "$RUNNER_TEMP/headers" -w '%{http_code}' \
+                    -H "Authorization: Bearer $PUBLISH_TOKEN" -H 'Accept: application/vnd.github+json' \
+                    "https://api.github.com/repos/$CHARTS_REPO")" || code=000
+          if [ "$code" != 200 ]; then
+            echo "::warning::$WHICH was refused reading $CHARTS_REPO (HTTP $code): the chart is released but not added to the Marketplace's blueprints index"; exit 0
+          fi
+          # The publisher creates releases and pushes gh-pages there: both need push.
+          if [ "$(jq -r '.permissions.push // false' "$RUNNER_TEMP/repo.json")" != true ]; then
+            echo "::warning::$WHICH may not write to $CHARTS_REPO: the chart is released but not added to the Marketplace's blueprints index"; exit 0
+          fi
+          # A classic token names its scopes, and writing needs repo (or public_repo, the repository
+          # being public) whatever the account behind it may do.
+          if grep -qi '^x-oauth-scopes:' "$RUNNER_TEMP/headers"; then
+            scopes="$(sed -n 's/^x-oauth-scopes:[[:space:]]*//Ip' "$RUNNER_TEMP/headers" | tr -d '\r')"
+            if ! printf '%s' "$scopes" | tr -d ' ' | tr ',' '\n' | grep -Eqx 'repo|public_repo'; then
+              echo "::warning::$WHICH has scopes '$scopes', none of which writes to $CHARTS_REPO: the chart is released but not added to the Marketplace's blueprints index"; exit 0
+            fi
+          fi
+          echo "::notice::the blueprints index is published with $WHICH"
+          echo "ok=true" >> "$GITHUB_OUTPUT"
+
+      - if: steps.token.outputs.ok == 'true'
+        uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - if: steps.token.outputs.ok == 'true'
+        uses: azure/setup-helm@v5.0.0
+        with:
+          version: v3.19.0
+
+      - id: p
+        if: steps.token.outputs.ok == 'true'
+        env:
+          VERSION: ${{ needs.resolve.outputs.version }}
+          SRC: ${{ github.repository }}
+          INDEX_URL: https://krateo-blueprints.github.io/charts/blueprints/index.yaml
+        run: |
+          set -euo pipefail
+          echo "publish=false" >> "$GITHUB_OUTPUT"
+          # A page set (the CHART_VERSION placeholder) is portal pages, not a Marketplace blueprint.
+          declared="$(sed -n 's/^version:[[:space:]]*//p' Chart.yaml | head -1 | tr -d "\"' ")"
+          if [ "$declared" = CHART_VERSION ]; then
+            echo "::notice::a page set: the Marketplace lists blueprints, so $VERSION is not added to its index"; exit 0
+          fi
+          name="$(yq -r '.name' Chart.yaml)"
+
+          # The index refuses what is not a full blueprint (publish-chart.yaml's channel gate). Said
+          # here, in this repository's terms, rather than as a red run in krateo-blueprints/charts.
+          missing=()
+          [ -f values.schema.json ] || missing+=("values.schema.json")
+          [ -f compositiondefinition.yaml ] || missing+=("compositiondefinition.yaml")
+          case "$(yq -r '.icon // ""' Chart.yaml)" in https://*) ;; *) missing+=("an https icon in Chart.yaml") ;; esac
+          if [ "${#missing[@]}" -gt 0 ]; then
+            echo "::warning::not added to the Marketplace's blueprints index: it needs ${missing[*]}"; exit 0
+          fi
+
+          # A name in the index belongs to the repository that first published it there. A name the
+          # index already has from anywhere else (a curated blueprint, a platform chart, another
+          # builder repository) is left alone: merging this chart under it would add a version to
+          # someone else's entry. The publisher only refuses a name whose owner is stamped, and the
+          # curated entries carry no stamp, so the check is made here.
+          if curl -fsSL --retry 3 "$INDEX_URL" -o "$RUNNER_TEMP/index.yaml"; then
+            if [ "$(N="$name" yq -r '.entries | has(strenv(N))' "$RUNNER_TEMP/index.yaml")" = true ]; then
+              owner="$(N="$name" yq -r '.entries[strenv(N)][0].annotations["krateo.io/source-repo"] // ""' "$RUNNER_TEMP/index.yaml")"
+              if [ "$owner" != "$SRC" ]; then
+                echo "::warning::the Marketplace's blueprints index already has a chart named '$name' (${owner:-not from a builder repository}); rename the chart to list it"; exit 0
+              fi
+            fi
+          else
+            echo "::warning::could not read $INDEX_URL; the publisher's own collision guard still applies"
+          fi
+
+          # The package the index serves. It is packaged again rather than taken from the OCI job, for
+          # two differences the index needs and the OCI package must not have:
+          #   • compositiondefinition.yaml inside it (the channel gate requires one). .helmignore keeps
+          #     the file out of the OCI package because it belongs to the repository; here the line is
+          #     dropped, and the file is stamped with the version as the registration job stamps it.
+          #   • krateo.io/source-repo: <owner>/<repo>, the owner the line above reads and the publisher's
+          #     collision guard reads. The portal adds a card from the live index only for a chart that
+          #     carries it, which keeps out the platform charts that share the index.
+          # Everything else is Chart.yaml as committed: krateo.io/category, maturity and every other
+          # annotation the Marketplace reads ride through untouched, and none is made up when absent.
+          sed -i "s/CHART_VERSION/${VERSION}/g" compositiondefinition.yaml
+          sed -i '\#^/compositiondefinition\.yaml$#d' .helmignore
+          yq -i '.annotations["krateo.io/source-repo"] = strenv(SRC)' Chart.yaml
+          if ! yq -e '.annotations["krateo.io/category"]' Chart.yaml >/dev/null 2>&1; then
+            echo "::notice::Chart.yaml has no krateo.io/category annotation, so its Marketplace card shows no category"
+          fi
+          # As release-oci does: charts/ is not committed, and a chart that declares dependencies does
+          # not package until they are fetched.
+          if grep -q '^dependencies:' Chart.yaml; then
+            helm dependency build . >/dev/null 2>&1 || helm dependency update . >/dev/null 2>&1 || true
+          fi
+          out="$RUNNER_TEMP/charts-dist"
+          helm package . -d "$out" >/dev/null
+          tgz="$out/${name}-${VERSION}.tgz"
+          [ -f "$tgz" ] || { echo "::warning::expected $tgz, packaged $(ls "$out")"; exit 0; }
+          if tar tzf "$tgz" | grep -E '^[^/]+/(\.git|\.github)/'; then
+            echo "::warning::the package carries .git/ or .github/; not added to the index"; exit 0
+          fi
+          echo "publish=true" >> "$GITHUB_OUTPUT"
+
+      - if: steps.p.outputs.publish == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          # The name and the layout (the .tgz at the root) publish-chart.yaml downloads.
+          name: charts-dist
+          path: ${{ runner.temp }}/charts-dist/*.tgz
+          if-no-files-found: error
+          retention-days: 1
+
+  # krateo-blueprints/charts uploads the package to its Releases and merges its entry into the
+  # blueprints channel index on gh-pages, which the Marketplace reads. The token is the one the
+  # token step above tried (see index-package). This job cannot continue-on-error (GitHub refuses
+  # the key on a job that calls a workflow), so what the token step cannot see beforehand, such as
+  # a branch protection on gh-pages or a name collision, still shows here as a failed job; the
+  # chart, its tag and its GitHub release are already out by then.
+  index:
+    needs: [resolve, index-package]
+    if: ${{ !cancelled() && needs.index-package.outputs.publish == 'true' }}
+    uses: krateo-blueprints/charts/.github/workflows/publish-chart.yaml@main
+    permissions:
+      contents: read
+    with:
+      source_repo: ${{ github.repository }}
+      git_tag: ${{ needs.resolve.outputs.version }}
+      channel: blueprints
+    secrets:
+      PUBLISH_TOKEN: ${{ secrets.CHARTS_PUBLISH_TOKEN || secrets.RELEASE_FEED_TOKEN }}

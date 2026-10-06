@@ -1,0 +1,64 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "properties": {
+    "image": {
+      "type": "string",
+      "title": "image",
+      "default": "ghcr.io/krateo-platformops/meetup-site-app:1.0.0",
+      "description": "The container image the meetup site runs."
+    },
+    "replicas": {
+      "type": "integer",
+      "title": "replicas",
+      "default": 1,
+      "description": "How many copies of the web app run."
+    },
+    "resources": {
+      "type": "object",
+      "title": "resources",
+      "default": {},
+      "description": "What the web app may use.",
+      "properties": {
+        "cpuRequest": {
+          "type": "string",
+          "title": "cpu request",
+          "default": "100m"
+        },
+        "cpuLimit": {
+          "type": "string",
+          "title": "cpu limit",
+          "default": "500m"
+        },
+        "memoryRequest": {
+          "type": "string",
+          "title": "memory request",
+          "default": "128Mi"
+        },
+        "memoryLimit": {
+          "type": "string",
+          "title": "memory limit",
+          "default": "256Mi"
+        }
+      }
+    },
+    "probePath": {
+      "type": "string",
+      "title": "health check path",
+      "default": "/",
+      "description": "The path the liveness probe requests."
+    },
+    "surveyTitle": {
+      "type": "string",
+      "title": "survey title",
+      "default": "Meetup feedback",
+      "description": "The title of the attendee feedback form."
+    },
+    "machineType": {
+      "type": "string",
+      "title": "machine type",
+      "default": "e2-small",
+      "description": "The Google Cloud machine type for the check-in VM."
+    }
+  }
+}
