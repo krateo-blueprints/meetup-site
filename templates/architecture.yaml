@@ -1,0 +1,68 @@
+{{- /* Rendered per composition so the detail page can read the chart architecture through
+       snowplow /call under the caller's own RBAC. Edit data.architecture; the composer owns the rest. */}}
+{{- $g := .Values.global | default dict }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ printf "%s-architecture" ($g.compositionName | default .Release.Name) }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    krateo.io/architecture: "meetup-site"
+data:
+  architecture: |
+    apiVersion: architecture.krateo.io/v1alpha1
+    kind: ChartArchitecture
+    chart: meetup-site
+    resources:
+      - id: deployment
+        class: native
+        apiVersion: apps/v1
+        kind: Deployment
+        template: templates/deployment.yaml
+        name: printf "%s-deployment" $.Release.Name | trunc 63 | trimSuffix "-"
+        dependsOn:
+          - ref: form
+            ready: true
+          - ref: computeinstance
+            ready: true
+      - id: service
+        class: native
+        apiVersion: v1
+        kind: Service
+        template: templates/service.yaml
+        name: printf "%s-service" $.Release.Name | trunc 63 | trimSuffix "-"
+      - id: form
+        class: custom
+        apiVersion: eventfeedback.example.io/v1alpha1
+        kind: Form
+        template: templates/form.yaml
+        name: printf "%s-form" $.Release.Name | trunc 63 | trimSuffix "-"
+        readyWhen: .status.conditions[] | select(.type == "Ready") | .status == "True"
+      - id: computeinstance
+        class: custom
+        apiVersion: compute.cnrm.cloud.google.com/v1beta1
+        kind: ComputeInstance
+        template: templates/computeinstance.yaml
+        name: printf "%s-computeinstance" $.Release.Name | trunc 63 | trimSuffix "-"
+        readyWhen: .status.conditions[] | select(.type == "Ready") | .status == "True"
+{{- /* krateo:graph begin — generated from data.architecture; edit the descriptor, not this block. */}}
+{{- $v := .Values.AsMap }}
+{{- $nodes := list }}
+{{- $names := list }}
+{{- $present := true }}
+{{- $names = append $names (printf "%s-deployment" $.Release.Name | trunc 63 | trimSuffix "-") }}
+{{- $nodes = append $nodes (dict "id" "deployment" "apiVersion" "apps/v1" "kind" "Deployment" "class" "native" "level" 1 "forEach" false "present" $present "names" $names "dependsOn" (list (dict "ref" "form" "ready" true "all" false "active" true) (dict "ref" "computeinstance" "ready" true "all" false "active" true))) }}
+{{- $names = list }}
+{{- $present = true }}
+{{- $names = append $names (printf "%s-service" $.Release.Name | trunc 63 | trimSuffix "-") }}
+{{- $nodes = append $nodes (dict "id" "service" "apiVersion" "v1" "kind" "Service" "class" "native" "level" 0 "forEach" false "present" $present "names" $names "dependsOn" (list)) }}
+{{- $names = list }}
+{{- $present = true }}
+{{- $names = append $names (printf "%s-form" $.Release.Name | trunc 63 | trimSuffix "-") }}
+{{- $nodes = append $nodes (dict "id" "form" "apiVersion" "eventfeedback.example.io/v1alpha1" "kind" "Form" "class" "custom" "level" 0 "readyWhen" ".status.conditions[] | select(.type == \"Ready\") | .status == \"True\"" "forEach" false "present" $present "names" $names "dependsOn" (list)) }}
+{{- $names = list }}
+{{- $present = true }}
+{{- $names = append $names (printf "%s-computeinstance" $.Release.Name | trunc 63 | trimSuffix "-") }}
+{{- $nodes = append $nodes (dict "id" "computeinstance" "apiVersion" "compute.cnrm.cloud.google.com/v1beta1" "kind" "ComputeInstance" "class" "custom" "level" 0 "readyWhen" ".status.conditions[] | select(.type == \"Ready\") | .status == \"True\"" "forEach" false "present" $present "names" $names "dependsOn" (list)) }}
+  graph: {{ dict "v" 1 "chart" "meetup-site" "states" (list "level-0" "level-1") "composition" (dict "apiVersion" ($g.compositionApiVersion | default "") "resource" ($g.compositionResource | default "") "name" ($g.compositionName | default "") "namespace" .Release.Namespace "uid" ($g.compositionId | default "")) "nodes" $nodes | toJson | quote }}
+{{- /* krateo:graph end */}}
