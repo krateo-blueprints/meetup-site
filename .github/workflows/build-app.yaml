@@ -1,0 +1,51 @@
+# Builds and publishes the web app in app/ to ghcr.io/<owner>/meetup-site-app.
+#
+# The chart's values.yaml references that image, so the blueprint and the app it
+# deploys are released by the same repository. Triggered by a tag so the image
+# version is deliberate, and by pushes that touch app/ so main is never stale.
+#
+# linux/amd64 only, on purpose: the cluster's nodes are amd64, and a manifest built
+# on an arm64 machine has poisoned them before.
+name: build-app
+
+on:
+  push:
+    tags: ["app-[0-9]+.[0-9]+.[0-9]+"]
+    branches: [main]
+    paths: ["app/**", ".github/workflows/build-app.yaml"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: the tag decides the version; a branch push is :edge
+        id: v
+        run: |
+          set -euo pipefail
+          case "${GITHUB_REF}" in
+            refs/tags/app-*) v="${GITHUB_REF#refs/tags/app-}" ;;
+            *)               v=edge ;;
+          esac
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "::notice::publishing meetup-site-app:$v"
+
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: ./app
+          platforms: linux/amd64
+          push: true
+          tags: ghcr.io/${{ github.repository_owner }}/meetup-site-app:${{ steps.v.outputs.version }}
+          provenance: false
