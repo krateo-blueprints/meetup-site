@@ -5,4 +5,8 @@ metadata:
 spec:
   title: {{ .Values.surveyTitle }}
   configurationRef:
-    name: event-feedback
+    # The Configure-credentials page writes the Configuration into the
+    # RestDefinition's own namespace and seeds its name from the RestDefinition,
+    # so krateo-system/event-feedback-form is the only object that can exist.
+    name: event-feedback-form
+    namespace: krateo-system
