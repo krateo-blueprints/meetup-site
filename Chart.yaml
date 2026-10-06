@@ -3,4 +3,4 @@ name: meetup-site
 description: Meetup site blueprint with web deployment, feedback form, and GCP VM.
 icon: https://raw.githubusercontent.com/krateo-platformops/.github/main/brand/logo.svg
 type: application
-version: 0.2.0
+version: 0.3.0
