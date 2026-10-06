@@ -1,0 +1,8 @@
+apiVersion: eventfeedback.example.io/v1alpha1
+kind: Form
+metadata:
+  name: {{ printf "%s-form" $.Release.Name | trunc 63 | trimSuffix "-" }}
+spec:
+  title: {{ .Values.surveyTitle }}
+  configurationRef:
+    name: event-feedback
