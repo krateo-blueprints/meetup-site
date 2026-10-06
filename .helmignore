@@ -20,3 +20,6 @@
 # A blueprint's status projection (the <chart>-status RESTAction + its apiRef rows): the portal's Install
 # step applies it beside the registration file, so, like that file, it belongs to the repository.
 /status-projection.json
+# The web app this blueprint deploys. Its source belongs to the repository and is
+# built by .github/workflows/build-app.yaml; the chart references only the image.
+/app/
