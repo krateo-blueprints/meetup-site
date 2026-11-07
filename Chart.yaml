@@ -4,3 +4,12 @@ description: Meetup site blueprint with web deployment, feedback form, and GCP V
 icon: https://raw.githubusercontent.com/krateo-platformops/.github/main/brand/logo.svg
 type: application
 version: 0.4.0
+keywords:
+  - web
+  - gcp
+  - vm
+  - feedback
+sources:
+  - https://github.com/krateo-blueprints/meetup-site
+annotations:
+  krateo.io/source-repo: krateo-blueprints/meetup-site
